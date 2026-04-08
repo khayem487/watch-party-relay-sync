@@ -1,0 +1,12 @@
+{
+  "name": "watch-party",
+  "version": "1.0.0",
+  "description": "Sync video playback with friends using local Stremio streams",
+  "main": "server.js",
+  "scripts": {
+    "start": "node server.js"
+  },
+  "dependencies": {
+    "ws": "^8.16.0"
+  }
+}
