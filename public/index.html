@@ -239,9 +239,10 @@
   </div>
 
   <script>
-    const DRIFT_THRESHOLD = 0.35;
+    const ACTION_DRIFT_THRESHOLD = 0.35;
+    const PERIODIC_SYNC_CORRECTION_THRESHOLD = 1.2;
     const HARD_DRIFT_THRESHOLD = 2.0;
-    const SYNC_INTERVAL_MS = 5000;
+    const SYNC_INTERVAL_MS = 7000;
     const EVENT_HOLD_MS = 350;
 
     let ws = null;
@@ -288,6 +289,17 @@
       if (el) el.textContent = message;
     }
 
+    function applySubtitleInputPermissions() {
+      const subInput = qs('subtitle-url');
+      if (!subInput) return;
+
+      // Invite viewers can change subtitle tracks, but cannot inject custom subtitle URLs.
+      const lockForViewer = autoInviteMode;
+      subInput.readOnly = lockForViewer;
+      subInput.setAttribute('aria-readonly', lockForViewer ? 'true' : 'false');
+      subInput.title = lockForViewer ? 'Locked for viewers. Use subtitle track dropdown.' : '';
+    }
+
     function setElementHidden(id, hidden) {
       const el = qs(id);
       if (!el) return;
@@ -305,6 +317,8 @@
       if (autoInviteMode) {
         qs('show-advanced-btn').textContent = advancedSettingsVisible ? 'Hide setup' : 'Show setup';
       }
+
+      applySubtitleInputPermissions();
     }
 
     function toggleAdvancedSettings() {
@@ -684,7 +698,7 @@
       withSuppressedEvents(() => {
         if (validTime) {
           const drift = Math.abs(video.currentTime - remoteTime);
-          const threshold = reason === 'sync' ? DRIFT_THRESHOLD : 0.2;
+          const threshold = reason === 'sync' ? PERIODIC_SYNC_CORRECTION_THRESHOLD : ACTION_DRIFT_THRESHOLD;
           if (drift > threshold) {
             video.currentTime = remoteTime;
             if (reason === 'sync' && drift > HARD_DRIFT_THRESHOLD) {
@@ -727,7 +741,8 @@
         // Avoid fighting while this client is actively seeking locally.
         if (Date.now() - lastLocalSeekAt < 800) return;
         const drift = Math.abs(video.currentTime - remoteTime);
-        if (drift > DRIFT_THRESHOLD) {
+        const playbackMismatch = (!!msg.playing) !== (!video.paused);
+        if (drift > PERIODIC_SYNC_CORRECTION_THRESHOLD || (playbackMismatch && drift > 0.55)) {
           applyRemoteState({ time: remoteTime, playing: !!msg.playing }, 'sync');
         }
       }

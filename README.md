@@ -1,6 +1,6 @@
 # Watch Party (Stremio Relay + Sync + Subtitles)
 
-A lightweight watch-party app for syncing playback between friends.
+A lightweight watch-party app for syncing playback between viewers.
 
 ## What it does
 
@@ -82,7 +82,7 @@ Without this, tunnel links are temporary.
 2. Set room + stream URL
 3. Keep Relay ON if you want host-streamed mode
 4. Click **Join room**
-5. Click **Copy room link** and send to friends
+5. Click **Copy room link** and share it with viewers
 
 ### Guest
 
@@ -134,7 +134,7 @@ git remote add origin https://github.com/<YOUR_USER>/<YOUR_REPO>.git
 git push -u origin main
 ```
 
-Then your friend can run:
+Any host can run:
 
 ```powershell
 git clone https://github.com/<YOUR_USER>/<YOUR_REPO>.git
