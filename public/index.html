@@ -187,18 +187,16 @@
           <label for="local-first" style="margin:0;">Local-first (if viewer has same local stream, use it; fallback to relay)</label>
         </div>
 
-        <div class="field full">
-          <label>Optional subtitles URL (.vtt / .srt converted to .vtt)</label>
-          <input id="subtitle-url" placeholder="https://.../subs.vtt" />
-          <div class="hint">Embedded subtitles inside MKV streams usually do NOT show in browser players. External .vtt works best.</div>
+        <div class="field full" id="field-subtitles">
+          <label>Subtitles</label>
+          <input id="subtitle-url" type="hidden" />
           <div class="row" style="margin-top:8px;">
-            <button class="secondary" onclick="loadSubtitleTracks()">Load subtitle tracks from stream</button>
+            <button class="secondary" onclick="loadSubtitleTracks()">Load subtitle tracks</button>
             <select id="subtitle-track" style="min-width:260px;">
-              <option value="">Select extracted subtitle track…</option>
+              <option value="">Select subtitle track…</option>
             </select>
-            <button class="secondary" onclick="applySelectedSubtitleTrack()">Use selected track</button>
           </div>
-          <div class="hint" id="subtitle-status">Tip: if this stream has text subtitles, they can be auto-converted to browser VTT.</div>
+          <div class="hint" id="subtitle-status">Choose a subtitle track from the dropdown. Manual subtitle links are disabled for viewers.</div>
         </div>
 
         <div class="field full row" id="field-join-actions">
@@ -293,11 +291,10 @@
       const subInput = qs('subtitle-url');
       if (!subInput) return;
 
-      // Invite viewers can change subtitle tracks, but cannot inject custom subtitle URLs.
-      const lockForViewer = autoInviteMode;
-      subInput.readOnly = lockForViewer;
-      subInput.setAttribute('aria-readonly', lockForViewer ? 'true' : 'false');
-      subInput.title = lockForViewer ? 'Locked for viewers. Use subtitle track dropdown.' : '';
+      // Manual subtitle URL entry is disabled in UI; viewers should only switch tracks.
+      subInput.readOnly = true;
+      subInput.setAttribute('aria-readonly', 'true');
+      subInput.title = 'Manual subtitle URL is managed automatically from selected track.';
     }
 
     function setElementHidden(id, hidden) {
