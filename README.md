@@ -17,6 +17,8 @@ Open **http://127.0.0.1:3456** and choose **Try with a sample video**. Open the 
 
 The sample is the *Big Buck Bunny* trailer, © 2008 Blender Foundation, [CC BY 3.0](https://peach.blender.org/about/). The video is loaded directly from the W3C public media sample URL; it is not bundled with this project.
 
+Browsers may require each viewer to click **Play** once before allowing playback with sound. A viewer whose autoplay is blocked sees an instruction and does not broadcast a paused state to everyone else. Normal playback synchronization resumes after that viewer starts the video.
+
 ## What works
 
 | Capability | Implementation |

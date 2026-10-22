@@ -92,6 +92,41 @@ test('browser reconnect ignores stale sockets and respects an intentional discon
   assert.equal(sockets.length, 2, 'intentional disconnection must not schedule a fresh socket');
 });
 
+test('blocked browser autoplay cannot broadcast a paused state to the room', async () => {
+  const html = fs.readFileSync(require.resolve('../public/index.html'), 'utf8');
+  const script = [...html.matchAll(/<script>([\s\S]*?)<\/script>/g)][0][1];
+  const source = script.slice(script.indexOf('    function withSuppressedEvents('), script.indexOf('    function stopSyncLoop()'));
+  const listeners = {}, messages = [], logs = [];
+  let tick;
+  const video = {
+    dataset: {}, currentTime: 8, readyState: 4, seeking: false, paused: true,
+    play: () => Promise.reject(new Error('NotAllowedError')),
+    pause() { this.paused = true; },
+    addEventListener(type, callback) { listeners[type] = callback; }
+  };
+  const context = vm.createContext({
+    video, suppressEvents: false, playbackBlocked: false, lastRemoteApplyAt: 0,
+    lastLocalSeekAt: 0, lastSyncSentAt: 0, syncTimer: null, seekDebounceTimer: null,
+    EVENT_HOLD_MS: 250, PERIODIC_SYNC_CORRECTION_THRESHOLD: 1.5,
+    ACTION_DRIFT_THRESHOLD: 0.2, HARD_DRIFT_THRESHOLD: 5, SYNC_INTERVAL_MS: 1500,
+    clearInterval() {}, clearTimeout() {}, clearRelayFallbackTimer() {},
+    setTimeout() {}, setInterval(callback) { tick = callback; return 1; },
+    wsReady: () => true, log: text => logs.push(text),
+    sendThrottled(type, data) { messages.push(data); }
+  });
+  vm.runInContext(source + ';bindVideoEventsOnce();applyRemoteState({time:8,playing:true});startSyncLoop();', context);
+  await Promise.resolve(); await Promise.resolve();
+  vm.runInContext('suppressEvents=false;lastRemoteApplyAt=0;', context);
+  tick(); listeners.pause();
+  assert.equal(messages.length, 0, 'a locally blocked viewer must not pause the room');
+  assert.match(logs.join('\n'), /Click Play/);
+  video.paused = false;
+  listeners.play();
+  tick();
+  assert.equal(messages[0].type, 'play');
+  assert.equal(messages.at(-1).playing, true, 'explicit local playback resumes normal sync');
+});
+
 process.env.PORT = '0';
 process.env.HOST = '127.0.0.1';
 delete process.env.REDIS_URL;

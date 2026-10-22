@@ -274,6 +274,7 @@
     let advancedSettingsVisible = false;
 
     let suppressEvents = false;
+    let playbackBlocked = false;
     let syncTimer = null;
 
     let shouldReconnect = false;
@@ -707,6 +708,7 @@
       const remoteTime = Number(remote.time);
       const remotePlaying = !!remote.playing;
       const validTime = Number.isFinite(remoteTime);
+      if (!remotePlaying) playbackBlocked = false;
 
       withSuppressedEvents(() => {
         if (validTime) {
@@ -721,7 +723,10 @@
         }
 
         if (remotePlaying && video.paused) {
-          video.play().catch(() => {});
+          video.play().then(() => { playbackBlocked = false; }).catch(() => {
+            if (!playbackBlocked) log('Playback needs your permission on this device. Click Play to join without pausing everyone else.');
+            playbackBlocked = true;
+          });
         } else if (!remotePlaying && !video.paused) {
           video.pause();
         }
@@ -766,6 +771,7 @@
       video.dataset.bound = '1';
 
       video.addEventListener('play', () => {
+        playbackBlocked = false;
         if (suppressEvents) return;
         if (Date.now() - lastRemoteApplyAt < 500) return;
         clearRelayFallbackTimer();
@@ -773,7 +779,7 @@
       });
 
       video.addEventListener('pause', () => {
-        if (suppressEvents) return;
+        if (suppressEvents || playbackBlocked) return;
         if (Date.now() - lastRemoteApplyAt < 500) return;
         sendThrottled('pause', { type: 'pause', time: video.currentTime }, 250);
       });
@@ -810,7 +816,7 @@
       clearInterval(syncTimer);
       syncTimer = setInterval(() => {
         if (!wsReady() || !video) return;
-        if (suppressEvents || video.seeking) return;
+        if (suppressEvents || playbackBlocked || video.seeking || video.readyState < 2) return;
         if (Date.now() - lastLocalSeekAt < 800) return;
 
         const now = Date.now();
@@ -832,6 +838,7 @@
     function configureVideoSource() {
       video = qs('video');
       bindVideoEventsOnce();
+      playbackBlocked = false;
 
       video.src = streamUrl;
       armRelayFallbackTimer();
@@ -1003,6 +1010,10 @@
 
     function syncNow() {
       if (!video) return;
+      if (playbackBlocked) {
+        log('Click Play on this device before sending its playback state.');
+        return;
+      }
       sendThrottled('sync', { type: 'sync', time: video.currentTime, playing: !video.paused }, 300);
       log('Manual sync sent');
     }
