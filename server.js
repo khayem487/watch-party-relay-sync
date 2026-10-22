@@ -1,12 +1,41 @@
 const http = require('http');
 const fs = require('fs');
 const path = require('path');
-const { Readable } = require('stream');
 const { spawn } = require('child_process');
-const { WebSocketServer } = require('ws');
+const { createMediaPolicy } = require('./lib/media-policy');
+const { createProxyHandler } = require('./lib/proxy');
+const { createRoomStore } = require('./lib/room-store');
+const { attachRealtime } = require('./lib/realtime');
 
 const PORT = Number(process.env.PORT || 3456);
-const rooms = new Map();
+const HOST = process.env.HOST || (process.env.VERCEL ? '0.0.0.0' : '127.0.0.1');
+const allowPrivate = process.env.ALLOW_PRIVATE_MEDIA === 'true';
+if (allowPrivate && (process.env.VERCEL || !['127.0.0.1', '::1', 'localhost'].includes(HOST)))
+  throw new Error('Private media is permitted only on a loopback-only local server.');
+const nativeSubtitles = allowPrivate && process.env.ENABLE_LOCAL_SUBTITLES === 'true';
+const policy = createMediaPolicy({
+  allowedHosts: String(process.env.MEDIA_ALLOWED_HOSTS || '').split(','), allowPrivate
+});
+if ((process.env.VERCEL || process.env.REQUIRE_SHARED_ROOMS === 'true') && !process.env.REDIS_URL)
+  throw new Error('Shared Redis room storage is required for this cloud deployment.');
+const store = createRoomStore();
+function allowOrigin(req) {
+  if (allowPrivate) {
+    try {
+      const hostname = new URL('http://' + req.headers.host).hostname;
+      if (!['127.0.0.1', 'localhost', '[::1]'].includes(hostname)) return false;
+    } catch { return false; }
+  }
+  const configured = String(process.env.ALLOWED_ORIGINS || '').split(',').map(value => value.trim()).filter(Boolean);
+  if (req.headers.origin && configured.includes(req.headers.origin)) return true;
+  if (req.headers['sec-fetch-site'] === 'cross-site') return false;
+  if (!req.headers.origin) return true;
+  try {
+    const origin = new URL(req.headers.origin);
+    return origin.host === req.headers.host;
+  } catch { return false; }
+}
+
 
 const LOCAL_APP_DATA = process.env.LOCALAPPDATA || '';
 
@@ -17,8 +46,14 @@ function firstExistingPath(candidates) {
       if (fs.existsSync(candidate)) return candidate;
       continue;
     }
-    // Plain command name (PATH lookup at spawn time)
-    return candidate;
+    // Locate an installed binary without executing a program during capability discovery.
+    const extensions = process.platform === 'win32' ? ['', '.exe', '.cmd'] : [''];
+    for (const directory of String(process.env.PATH || '').split(path.delimiter)) {
+      for (const extension of extensions) {
+        const binary = path.join(directory, candidate + extension);
+        if (fs.existsSync(binary)) return binary;
+      }
+    }
   }
   return null;
 }
@@ -87,105 +122,6 @@ function runCommandCapture(command, args, timeoutMs = 20000) {
   });
 }
 
-function safeRoomId(value) {
-  const room = String(value || '').trim().slice(0, 80);
-  return room.replace(/[^a-zA-Z0-9-_]/g, '') || 'movie-night';
-}
-
-function safeName(value) {
-  const name = String(value || '').trim().slice(0, 32);
-  return name.replace(/[<>]/g, '');
-}
-
-function getRoom(roomId) {
-  if (!rooms.has(roomId)) {
-    rooms.set(roomId, {
-      clients: new Set(),
-      state: { playing: false, time: 0, updatedAt: Date.now() },
-      nextUserId: 1,
-    });
-  }
-  return rooms.get(roomId);
-}
-
-function allocateUserName(room, requestedName = '') {
-  const base = String(requestedName || '').trim();
-  const used = new Set();
-  for (const client of room.clients) {
-    if (client?.userName) used.add(String(client.userName).toLowerCase());
-  }
-
-  if (base && !used.has(base.toLowerCase())) return base;
-  if (base && !/^host$/i.test(base)) {
-    let n = 2;
-    let candidate = `${base}-${n}`;
-    while (used.has(candidate.toLowerCase())) {
-      n += 1;
-      candidate = `${base}-${n}`;
-    }
-    return candidate;
-  }
-
-  let candidate;
-  do {
-    candidate = `User${room.nextUserId++}`;
-  } while (used.has(candidate.toLowerCase()));
-  return candidate;
-}
-
-function getEffectiveState(state) {
-  const now = Date.now();
-  const elapsed = Math.max(0, (now - state.updatedAt) / 1000);
-  return {
-    playing: !!state.playing,
-    time: state.playing ? state.time + elapsed : state.time,
-  };
-}
-
-function setRoomState(room, next) {
-  room.state = {
-    playing: typeof next.playing === 'boolean' ? next.playing : room.state.playing,
-    time: Number.isFinite(next.time) ? Math.max(0, next.time) : getEffectiveState(room.state).time,
-    updatedAt: Date.now(),
-  };
-}
-
-function broadcast(roomId, payload, exclude = null) {
-  if (!rooms.has(roomId)) return;
-  const room = rooms.get(roomId);
-  const data = JSON.stringify(payload);
-  for (const client of room.clients) {
-    if (client !== exclude && client.readyState === 1) {
-      client.send(data);
-    }
-  }
-}
-
-function leaveRoom(ws) {
-  if (!ws.roomId) return;
-  const roomId = ws.roomId;
-  if (!rooms.has(roomId)) {
-    ws.roomId = null;
-    return;
-  }
-
-  const room = rooms.get(roomId);
-  room.clients.delete(ws);
-  ws.roomId = null;
-
-  if (room.clients.size === 0) {
-    rooms.delete(roomId);
-    return;
-  }
-
-  broadcast(roomId, { type: 'user-count', users: room.clients.size });
-  broadcast(roomId, {
-    type: 'system',
-    text: `${ws.userName || 'Someone'} left the room`,
-    ts: Date.now(),
-  });
-}
-
 function proxifyUrl(rawUrl, baseUrl) {
   let absolute;
   try {
@@ -217,97 +153,21 @@ function rewriteM3U8(content, baseUrl) {
     .join('\n');
 }
 
-async function handleProxy(req, res, parsedUrl) {
-  const targetRaw = parsedUrl.searchParams.get('url');
-  if (!targetRaw) {
-    res.writeHead(400, { 'Content-Type': 'application/json; charset=utf-8' });
-    res.end(JSON.stringify({ error: 'Missing url query parameter' }));
-    return;
-  }
-
-  let target;
-  try {
-    target = new URL(targetRaw);
-  } catch {
-    res.writeHead(400, { 'Content-Type': 'application/json; charset=utf-8' });
-    res.end(JSON.stringify({ error: 'Invalid target URL' }));
-    return;
-  }
-
-  if (!['http:', 'https:'].includes(target.protocol)) {
-    res.writeHead(400, { 'Content-Type': 'application/json; charset=utf-8' });
-    res.end(JSON.stringify({ error: 'Only http/https target URLs are allowed' }));
-    return;
-  }
-
-  const headers = {};
-  if (req.headers.range) headers.range = req.headers.range;
-  if (req.headers['user-agent']) headers['user-agent'] = req.headers['user-agent'];
-  if (req.headers.accept) headers.accept = req.headers.accept;
-
-  let upstream;
-  try {
-    upstream = await fetch(target, {
-      method: req.method,
-      headers,
-      redirect: 'follow',
-    });
-  } catch (error) {
-    res.writeHead(502, { 'Content-Type': 'application/json; charset=utf-8' });
-    res.end(JSON.stringify({ error: 'Failed to fetch upstream stream', detail: String(error) }));
-    return;
-  }
-
-  const passHeaders = [
-    'content-type',
-    'content-length',
-    'accept-ranges',
-    'content-range',
-    'cache-control',
-    'etag',
-    'last-modified',
-  ];
-
-  for (const name of passHeaders) {
-    const value = upstream.headers.get(name);
-    if (value) res.setHeader(name, value);
-  }
-
-  res.statusCode = upstream.status;
-
-  const upstreamType = (upstream.headers.get('content-type') || '').toLowerCase();
-  const looksLikeM3U8ByType = upstreamType.includes('mpegurl');
-
-  if (looksLikeM3U8ByType || target.pathname.toLowerCase().endsWith('.m3u8')) {
-    const playlist = await upstream.text();
-    const isPlaylist = upstream.ok && (looksLikeM3U8ByType || playlist.trimStart().startsWith('#EXTM3U'));
-
-    if (isPlaylist) {
-      const rewritten = rewriteM3U8(playlist, upstream.url || target.toString());
-      res.setHeader('content-type', 'application/vnd.apple.mpegurl; charset=utf-8');
-      res.end(rewritten);
-      return;
-    }
-
-    // Not a valid playlist body (often an upstream error text); pass through unchanged.
-    res.end(playlist);
-    return;
-  }
-
-  if (req.method === 'HEAD') {
-    res.end();
-    return;
-  }
-
-  if (!upstream.body) {
-    res.end();
-    return;
-  }
-
-  Readable.fromWeb(upstream.body).pipe(res);
-}
+const handleProxy = createProxyHandler(policy, rewriteM3U8);
 
 async function handleSubtitleList(res, parsedUrl) {
+  if (!nativeSubtitles) {
+    res.writeHead(501, { 'Content-Type': 'application/json; charset=utf-8' });
+    res.end(JSON.stringify({ error: 'Embedded subtitle extraction is available only on a trusted local host with FFmpeg.' }));
+    return;
+  }
+  try { await policy.validate(parsedUrl.searchParams.get('url') || ''); }
+  catch {
+    res.writeHead(403, { 'Content-Type': 'application/json; charset=utf-8' });
+    res.end(JSON.stringify({ error: 'This source is not approved for local subtitle extraction.' }));
+    return;
+  }
+
   const targetRaw = parsedUrl.searchParams.get('url');
   const target = parseHttpUrl(targetRaw);
   if (!target) {
@@ -365,6 +225,18 @@ async function handleSubtitleList(res, parsedUrl) {
 }
 
 async function handleSubtitleVtt(req, res, parsedUrl) {
+  if (!nativeSubtitles) {
+    res.writeHead(501, { 'Content-Type': 'application/json; charset=utf-8' });
+    res.end(JSON.stringify({ error: 'Embedded subtitle extraction is available only on a trusted local host with FFmpeg.' }));
+    return;
+  }
+  try { await policy.validate(parsedUrl.searchParams.get('url') || ''); }
+  catch {
+    res.writeHead(403, { 'Content-Type': 'application/json; charset=utf-8' });
+    res.end(JSON.stringify({ error: 'This source is not approved for local subtitle extraction.' }));
+    return;
+  }
+
   const targetRaw = parsedUrl.searchParams.get('url');
   const target = parseHttpUrl(targetRaw);
   const streamIndex = Number(parsedUrl.searchParams.get('index'));
@@ -443,12 +315,25 @@ async function handleSubtitleVtt(req, res, parsedUrl) {
 }
 
 const server = http.createServer(async (req, res) => {
-  const parsedUrl = new URL(req.url, `http://${req.headers.host || 'localhost'}`);
+  res.setHeader('X-Content-Type-Options', 'nosniff');
+  res.setHeader('Referrer-Policy', 'same-origin');
+  let parsedUrl;
+  try { parsedUrl = new URL(req.url, `http://${req.headers.host || 'localhost'}`); }
+  catch { res.writeHead(400); res.end('Bad request'); return; }
   const pathname = parsedUrl.pathname;
+  if (pathname.startsWith('/api/') && !allowOrigin(req)) {
+    res.writeHead(403); res.end('Cross-origin request denied'); return;
+  }
+  if (pathname === '/api/config') {
+    res.writeHead(200, { 'Content-Type': 'application/json; charset=utf-8', 'Cache-Control': 'no-store' });
+    res.end(JSON.stringify({ roomStore: store.mode, multiInstance: store.mode === 'redis' && store.ready,
+      relayEnabled: policy.enabled, localMedia: allowPrivate, embeddedSubtitles: !!(nativeSubtitles && FFPROBE_BIN && FFMPEG_BIN) }));
+    return;
+  }
 
   if (pathname === '/health') {
-    res.writeHead(200, { 'Content-Type': 'application/json; charset=utf-8' });
-    res.end(JSON.stringify({ ok: true, rooms: rooms.size }));
+    res.writeHead(store.ready ? 200 : 503, { 'Content-Type': 'application/json; charset=utf-8' });
+    res.end(JSON.stringify({ ok: store.ready, localRooms: realtime.localRoomCount(), roomStore: store.mode, multiInstance: store.mode === 'redis' && store.ready }));
     return;
   }
 
@@ -467,11 +352,17 @@ const server = http.createServer(async (req, res) => {
     return;
   }
 
-  let file = pathname === '/' ? '/index.html' : pathname;
-  const safeFilePath = path.normalize(path.join(__dirname, 'public', file));
+    if (!['GET', 'HEAD'].includes(req.method)) {
+    res.writeHead(405); res.end('Method not allowed'); return;
+  }
+  let file;
+  try { file = pathname === '/' ? '/index.html' : decodeURIComponent(pathname); }
+  catch { res.writeHead(400); res.end('Bad path'); return; }
+  if (file.includes('\0')) { res.writeHead(400); res.end('Bad path'); return; }
+  const safeFilePath = path.resolve(__dirname, 'public', '.' + file);
   const publicRoot = path.normalize(path.join(__dirname, 'public'));
 
-  if (!safeFilePath.startsWith(publicRoot)) {
+  if (!safeFilePath.startsWith(publicRoot + path.sep)) {
     res.writeHead(403);
     res.end('Forbidden');
     return;
@@ -497,104 +388,22 @@ const server = http.createServer(async (req, res) => {
   });
 });
 
-const wss = new WebSocketServer({ server });
-
-wss.on('connection', (ws) => {
-  ws.roomId = null;
-  ws.userName = '';
-
-  ws.on('message', (raw) => {
-    let msg;
-    try {
-      msg = JSON.parse(String(raw));
-    } catch {
-      return;
-    }
-
-    if (!msg || typeof msg !== 'object') return;
-
-    if (msg.type === 'join') {
-      leaveRoom(ws);
-
-      ws.roomId = safeRoomId(msg.room);
-      const requestedName = safeName(msg.name);
-
-      const room = getRoom(ws.roomId);
-      ws.userName = allocateUserName(room, requestedName);
-      room.clients.add(ws);
-
-      ws.send(
-        JSON.stringify({
-          type: 'joined',
-          room: ws.roomId,
-          users: room.clients.size,
-          state: getEffectiveState(room.state),
-          you: ws.userName,
-        }),
-      );
-
-      broadcast(ws.roomId, { type: 'user-count', users: room.clients.size }, ws);
-      broadcast(ws.roomId, {
-        type: 'system',
-        text: `${ws.userName} joined the room`,
-        ts: Date.now(),
-      });
-      return;
-    }
-
-    if (!ws.roomId || !rooms.has(ws.roomId)) return;
-    const room = rooms.get(ws.roomId);
-
-    if (msg.type === 'request-state') {
-      ws.send(JSON.stringify({ type: 'state', ...getEffectiveState(room.state) }));
-      return;
-    }
-
-    if (msg.type === 'chat') {
-      const text = String(msg.text || '').trim().slice(0, 300);
-      if (!text) return;
-      broadcast(ws.roomId, {
-        type: 'chat',
-        from: ws.userName,
-        text,
-        ts: Date.now(),
-      });
-      return;
-    }
-
-    if (msg.type === 'play' || msg.type === 'pause' || msg.type === 'seek' || msg.type === 'sync') {
-      const time = Number(msg.time);
-      const current = getEffectiveState(room.state);
-
-      if (msg.type === 'play') {
-        setRoomState(room, { playing: true, time: Number.isFinite(time) ? time : current.time });
-      } else if (msg.type === 'pause') {
-        setRoomState(room, { playing: false, time: Number.isFinite(time) ? time : current.time });
-      } else if (msg.type === 'seek') {
-        setRoomState(room, { playing: room.state.playing, time: Number.isFinite(time) ? time : current.time });
-      } else if (msg.type === 'sync') {
-        const remotePlaying = typeof msg.playing === 'boolean' ? msg.playing : room.state.playing;
-        const remoteTime = Number.isFinite(time) ? time : current.time;
-        const drift = Math.abs(remoteTime - current.time);
-        if (drift > 0.25 || remotePlaying !== current.playing) {
-          setRoomState(room, { playing: remotePlaying, time: remoteTime });
-        }
-      }
-
-      const outbound = {
-        type: msg.type,
-        time: getEffectiveState(room.state).time,
-        playing: room.state.playing,
-        by: ws.userName,
-      };
-      broadcast(ws.roomId, outbound, ws);
-      return;
-    }
+const realtime = attachRealtime(server, store, allowOrigin);
+async function start() {
+  await store.connect(realtime.deliver);
+  await new Promise(resolve => server.listen(PORT, HOST, resolve));
+  console.log(`Watch Party running at http://${HOST}:${server.address().port} (rooms: ${store.mode})`);
+  return server;
+}
+async function close() {
+  await realtime.close();
+  await new Promise(resolve => server.close(resolve));
+  await store.close();
+}
+if (require.main === module) {
+  start().catch(() => {
+    console.error('Watch Party could not start. Verify room-store configuration; no memory fallback was used.');
+    process.exit(1);
   });
-
-  ws.on('close', () => leaveRoom(ws));
-});
-
-server.listen(PORT, () => {
-  console.log(`Watch Party running at http://localhost:${PORT}`);
-});
+}
+module.exports = { server, start, close, rewriteM3U8 };

@@ -4,9 +4,15 @@
   "description": "Sync video playback with friends using local Stremio streams",
   "main": "server.js",
   "scripts": {
-    "start": "node server.js"
+    "start": "node server.js",
+    "test": "node --test"
   },
   "dependencies": {
-    "ws": "^8.16.0"
+    "ipaddr.js": "2.5.0",
+    "redis": "6.3.0",
+    "ws": "8.22.0"
+  },
+  "engines": {
+    "node": ">=22"
   }
 }

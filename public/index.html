@@ -159,11 +159,14 @@
     <div class="card">
       <h1>🎬 Watch Party V2</h1>
       <div class="subtle">Sync playback + auto-reconnect + shareable room links + mini chat</div>
+      <p id="service-status" class="hint" role="status">Checking room service…</p>
+      <button class="secondary" id="sample-btn" type="button" disabled onclick="trySample()" style="margin-top:12px">Try with a sample video</button>
+      <p class="hint">Sample: Big Buck Bunny trailer, Blender Foundation, CC BY 3.0. <a href="https://peach.blender.org/about/" target="_blank" rel="noopener noreferrer" style="color:#c8b7ff">Film &amp; licence</a></p>
 
       <div class="setup-grid">
         <div class="field" id="field-room">
           <label>Room</label>
-          <input id="room" placeholder="movie-night" value="movie-night" />
+          <input id="room" placeholder="movie-night" value="" />
         </div>
 
         <div class="field" id="field-nickname">
@@ -172,18 +175,18 @@
         </div>
 
         <div class="field full" id="field-video-url">
-          <label>Your Stremio localhost stream URL</label>
-          <input id="video-url" placeholder="http://127.0.0.1:11470/..." />
-          <div class="hint">If relay mode is ON, this local stream gets proxied so friends can watch from one shared link.</div>
+          <label>Video URL</label>
+          <input id="video-url" placeholder="https://…/video.mp4" />
+          <div class="hint">Use a video you are allowed to share. Public hosting cannot read a stream running on your own localhost.</div>
         </div>
 
         <div class="field full row" style="gap:10px;" id="field-relay-mode">
-          <input type="checkbox" id="relay-mode" checked style="width:18px; height:18px;" />
-          <label for="relay-mode" style="margin:0;">Relay mode (stream from host PC to everyone)</label>
+          <input type="checkbox" id="relay-mode" style="width:18px; height:18px;" />
+          <label for="relay-mode" style="margin:0;">Relay through this server (approved media hosts only)</label>
         </div>
 
         <div class="field full row" style="gap:10px;" id="field-local-first">
-          <input type="checkbox" id="local-first" checked style="width:18px; height:18px;" />
+          <input type="checkbox" id="local-first" style="width:18px; height:18px;" />
           <label for="local-first" style="margin:0;">Local-first (if viewer has same local stream, use it; fallback to relay)</label>
         </div>
 
@@ -244,6 +247,15 @@
     const EVENT_HOLD_MS = 350;
 
     let ws = null;
+    let capabilities = { relayEnabled: false, embeddedSubtitles: false };
+    const SAMPLE_VIDEO = 'https://media.w3.org/2010/05/bunny/trailer.mp4';
+    function trySample() {
+      qs('video-url').value = SAMPLE_VIDEO;
+      qs('relay-mode').checked = false;
+      qs('local-first').checked = false;
+      inviteRelaySource = null;
+      joinRoom();
+    }
     let video = null;
     let roomId = null;
     let userName = null;
@@ -531,7 +543,11 @@
       select.innerHTML = '<option value="">Loading…</option>';
 
       try {
-        const endpoint = `${window.location.origin}/api/subtitles/list?url=${encodeURIComponent(source)}`;
+        if (!capabilities.embeddedSubtitles) {
+          setSubtitleStatus('Embedded subtitle extraction is not enabled on this server.');
+          return;
+        }
+      const endpoint = `${window.location.origin}/api/subtitles/list?url=${encodeURIComponent(source)}`;
         const response = await fetch(endpoint, { cache: 'no-store' });
         const data = await response.json();
 
@@ -838,10 +854,12 @@
 
     function connectSocket() {
       const proto = window.location.protocol === 'https:' ? 'wss' : 'ws';
-      const wsUrl = `${proto}://${window.location.host}`;
-      ws = new WebSocket(wsUrl);
+      const wsUrl = `${proto}://${window.location.host}/ws`;
+      const socket = new WebSocket(wsUrl);
+      ws = socket;
 
       ws.onopen = () => {
+        if (ws !== socket) return;
         reconnectDelay = 1000;
         setStatus('Connected', 'connected');
         send({ type: 'join', room: roomId, name: userName });
@@ -850,6 +868,7 @@
       };
 
       ws.onmessage = (event) => {
+        if (ws !== socket) return;
         let msg;
         try {
           msg = JSON.parse(event.data);
@@ -857,6 +876,10 @@
           return;
         }
 
+        if (msg.type === 'error') {
+          setStatus(msg.text || 'Room request failed', 'disconnected');
+          return;
+        }
         if (msg.type === 'joined') {
           setStatus(`Connected (${msg.users} users)`, 'connected');
           if (msg.state) applyRemoteState(msg.state, 'action');
@@ -891,6 +914,7 @@
       };
 
       ws.onclose = () => {
+        if (ws !== socket) return;
         stopSyncLoop();
         if (!shouldReconnect) {
           setStatus('Disconnected', 'disconnected');
@@ -902,9 +926,10 @@
         log(`Connection lost. Reconnecting in ${Math.round(reconnectDelay / 1000)}s...`);
 
         clearTimeout(reconnectTimer);
+        const delay = reconnectDelay + Math.floor(Math.random() * 400);
         reconnectTimer = setTimeout(() => {
-          connectSocket();
-        }, reconnectDelay);
+          if (shouldReconnect && ws === socket) connectSocket();
+        }, delay);
 
         reconnectDelay = Math.min(10000, Math.floor(reconnectDelay * 1.7));
       };
@@ -958,7 +983,7 @@
       lastSyncSentAt = 0;
       Object.keys(lastSentByType).forEach((k) => { lastSentByType[k] = 0; });
 
-      if (ws && ws.readyState === WebSocket.OPEN) {
+      if (ws && ![WebSocket.CLOSED, WebSocket.CLOSING].includes(ws.readyState)) {
         ws.close();
       }
       connectSocket();
@@ -983,6 +1008,10 @@
     }
 
     function sendChat() {
+      if (!wsReady()) {
+        setStatus('Reconnecting — your message has not been sent', 'reconnecting');
+        return;
+      }
       const input = qs('chat-input');
       const text = input.value.trim();
       if (!text) return;
@@ -1017,7 +1046,23 @@
       applySelectedSubtitleTrack({ autoRefreshPlayer: true, silent: true });
     });
 
-    (function initFromQuery() {
+    (async function initFromQuery() {
+      try {
+        const response = await fetch('/api/config', { cache: 'no-store' });
+        if (!response.ok) throw new Error('Unavailable');
+        capabilities = await response.json();
+        qs('service-status').textContent = capabilities.multiInstance
+          ? 'Shared room synchronisation connected.'
+          : 'Local test mode: rooms stay on this server; not yet a shared cloud deployment.';
+        qs('relay-mode').disabled = !capabilities.relayEnabled;
+        if (!capabilities.embeddedSubtitles) {
+          qs('field-subtitles').classList.add('is-hidden');
+        }
+      } catch {
+        qs('service-status').textContent = 'Room service is unavailable. Please try again later.';
+        qs('join-btn').disabled = true;
+        return;
+      }
       const url = new URL(window.location.href);
       const room = url.searchParams.get('room');
       const name = url.searchParams.get('name');
@@ -1032,14 +1077,16 @@
       advancedSettingsVisible = false;
 
       if (room) qs('room').value = room;
+      else qs('room').value = 'party-' + crypto.randomUUID().slice(0, 8);
       if (name && name.toLowerCase() !== 'host') qs('nickname').value = name;
       if (src) qs('video-url').value = src;
       if (sub) qs('subtitle-url').value = sub;
-      if (relay || relaySrc) qs('relay-mode').checked = true;
-      if (localFirst) qs('local-first').checked = true;
+      if (capabilities.relayEnabled && (relay || relaySrc)) qs('relay-mode').checked = true;
+      if (capabilities.localMedia && localFirst) qs('local-first').checked = true;
       if (relaySrc) inviteRelaySource = relaySrc;
 
       applyInviteUiMode();
+      qs('sample-btn').disabled = false;
 
       setShareLink();
       setStatus('Disconnected', 'disconnected');
