@@ -50,6 +50,8 @@ flowchart LR
 
 `Dockerfile.vercel` prepares the existing application for a Node 22 container. It **requires shared Redis** and refuses to start a cloud deployment without it. It does not silently fall back to isolated in-memory rooms.
 
+`vercel.json` explicitly routes the application, including `/ws`, to that container service. Local credentials and Vercel project metadata are excluded from Git and the deployment upload. See the [cloud deployment checklist](docs/CLOUD.md) before publishing.
+
 Required cloud configuration:
 
 - `REDIS_URL`: a **rediss://** TLS connection supporting GET/SET, EVAL, sorted sets and Pub/Sub.
@@ -80,7 +82,10 @@ npm test
 
 The suite uses real local HTTP and WebSocket connections for synchronisation, chat, room restoration, origin rejection, oversized messages, relay rewriting and blocked upstream content. It also checks private/mapped/reserved addresses, mixed DNS answers, redirect validation, socket DNS pinning and browser reconnection races.
 
-The external Redis integration test is explicitly skipped unless `TEST_REDIS_URL` is supplied. With a dedicated test Redis endpoint it creates a unique namespace, opens two independent store clients, checks shared state/events/presence and removes its own test keys.
+The external Redis integration tests are explicitly skipped unless `TEST_REDIS_URL` is supplied. With a dedicated test Redis endpoint they use unique namespaces and remove their own test keys:
+
+- Two independent store clients check shared state, events and presence.
+- Two separate Node server processes accept real WebSocket visitors, synchronise playback and exchange chat. One process is stopped and replaced; a visitor on the replacement must recover the paused position and continue chatting with the surviving process.
 
 ```powershell
 $env:TEST_REDIS_URL = 'rediss://<test-user>:<test-password>@<test-host>:<port>'
@@ -88,6 +93,8 @@ npm test
 ```
 
 An unconfigured external integration is **unverified**, not a passed multi-instance test.
+
+The GitHub Actions workflow provisions an isolated official Redis 8 container on its Linux runner. It supplies the test URL to both integration tests, runs the complete suite and rejects skipped tests. It requires no cloud database account, production credential or recurring schedule. A successful run proves the multi-process application against that Redis service; it does not replace verification of the deployed hosting platform or production TLS.
 
 ## Configuration reference
 

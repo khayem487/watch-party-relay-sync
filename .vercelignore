@@ -1,0 +1,9 @@
+.git/
+node_modules/
+.env
+.env.*
+!.env.example
+*.log
+test/
+.github/
+test-results.tap

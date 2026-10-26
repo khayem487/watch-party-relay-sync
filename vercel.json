@@ -1,0 +1,17 @@
+{
+  "services": {
+    "watch-party": {
+      "root": ".",
+      "entrypoint": "Dockerfile.vercel"
+    }
+  },
+  "rewrites": [
+    {
+      "source": "/(.*)",
+      "destination": {
+        "type": "service",
+        "service": "watch-party"
+      }
+    }
+  ]
+}

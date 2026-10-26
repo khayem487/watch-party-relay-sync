@@ -1,0 +1,48 @@
+name: Watch Party tests
+
+on:
+  push:
+    branches: [main, feat/watch-party-cloud]
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: watch-party-tests-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  shared-rooms:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    services:
+      redis:
+        # Official Redis 8.2.9 Alpine image, multi-platform manifest digest.
+        image: redis:8.2.9-alpine@sha256:5f2e6a105b2a8cc721911d5d29aadb032c25fe55b43e829e3d03413753ff47c2
+        ports:
+          - 6379/tcp
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 5s
+          --health-timeout 3s
+          --health-retries 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7
+        with:
+          node-version: '22'
+          package-manager-cache: false
+      - run: npm ci --ignore-scripts
+      - name: Exercise real Redis and independent WebSocket servers
+        env:
+          TEST_REDIS_URL: redis://127.0.0.1:${{ job.services.redis.ports['6379'] }}
+        shell: bash
+        run: |
+          test -n "$TEST_REDIS_URL"
+          node --test --test-reporter=tap | tee test-results.tap
+          grep -Eq '^# skipped 0$' test-results.tap
