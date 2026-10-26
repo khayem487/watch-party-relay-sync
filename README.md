@@ -4,7 +4,11 @@
 
 ![Node.js 22+](https://img.shields.io/badge/Node.js-22%2B-43853d?logo=node.js&logoColor=white)
 ![WebSocket](https://img.shields.io/badge/Realtime-WebSocket-7c5cff)
-![Redis ready](https://img.shields.io/badge/Shared_rooms-Redis_adapter-orange)
+![Redis TLS](https://img.shields.io/badge/Shared_rooms-Redis_TLS-orange)
+
+**[Open the live Watch Party](https://khayem-watch-party.vercel.app/)** · [Cloud setup and limits](docs/CLOUD.md)
+
+Choose **Try with a sample video**, then share the generated room link. The public deployment runs the actual Node/WebSocket application with shared Redis over TLS. Playback, pause, seek, bidirectional chat and restoration after reload were verified between two distinct Vercel deployments on 26 October 2026.
 
 ## Try it locally
 
@@ -32,7 +36,7 @@ Browsers may require each viewer to click **Play** once before allowing playback
 | Media relay | Optional exact-host allow-list, public IP checks and pinned DNS |
 | Embedded subtitle extraction | Trusted loopback-only local mode with installed FFmpeg/FFprobe |
 
-The current local tests prove the real local server. **No public multi-instance deployment is claimed until an external Redis connection has been supplied and tested.** The interface and `/api/config` report the selected mode.
+The [Redis CI suite](https://github.com/khayem487/watch-party-relay-sync/actions/runs/40369380314) passes all 13 tests with no skips, including two independent server processes and replacement of one server. The public browser checks separately verify the real cloud application and shared state across distinct deployments. The interface and `/api/config` report the selected mode.
 
 Rooms are link-based collaboration spaces, not authenticated private accounts. Anyone who obtains the room name can join. Chat messages are broadcast live and are not stored as a permanent chat history.
 
@@ -60,7 +64,7 @@ Required cloud configuration:
 
 No Redis account or paid service is created by this code. The connection credential belongs in the hosting platform's encrypted environment settings, never in Git or a share link.
 
-Room state expires after one hour without playback updates. Presence leases expire after 70 seconds and are refreshed by connected instances. Cloud failover/quotas remain to be measured against the actual chosen provider. An idle worker disappearing is not proof that a room was permanently stored.
+Room state expires after one hour without playback updates. Presence leases expire after 70 seconds and are refreshed by connected instances. The public demo uses Upstash Free in Frankfurt, alongside the Vercel container; its [command, storage and bandwidth quotas](https://upstash.com/docs/redis/overall/billing) still apply. Shared playback state survives a worker replacement, but is not permanent storage or permanent chat history.
 
 ## Media and localhost
 

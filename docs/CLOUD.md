@@ -1,6 +1,8 @@
 # Publish the actual Watch Party application
 
-The application is prepared on `feat/watch-party-cloud`. It has not yet been validated with an external Redis service or published as a working multi-instance cloud application.
+The actual application is live at **https://khayem-watch-party.vercel.app/**. On 26 October 2026, public browser checks verified real video playback, pause, seek and bidirectional chat between two distinct Vercel deployments sharing Upstash Redis over TLS. Reloading the second visitor restored the exact paused position and continuing chat. These checks are separate from the 13 passing Redis CI tests.
+
+The deployment uses Upstash **Free**, a single database in Frankfurt, with eviction disabled. Its credentials are encrypted server variables for **Production only**. The Vercel container also runs in `fra1`. No paid plan, card, Preview/Development database connection or wider GitHub App access was added. The following checklist describes setup for another installation and the public demo's operating limits.
 
 ## Configuration to supply
 

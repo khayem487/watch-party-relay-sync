@@ -11,5 +11,3 @@ Thumbs.db
 !.env.example
 .vercel/
 test-results.tap
-.vercel
-.env*
